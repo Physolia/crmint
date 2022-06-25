@@ -51,7 +51,8 @@ class BQToMeasurementProtocolGA4(bq_worker.BQWorker):
       ('bq_dataset_id', 'string', True, '', 'BQ Dataset ID'),
       ('bq_table_id', 'string', True, '', 'BQ Table ID'),
       ('bq_dataset_location', 'string', True, '', 'BQ Dataset Location'),
-      ('measurement_id', 'string', True, '', 'Measurement ID'),
+      ('measurement_id', 'string', False, '', 'Measurement ID'),
+      ('firebase_app_id', 'string', False, '', 'Firebase App ID'),
       ('api_secret', 'string', True, '', 'API Secret'),
       ('template', 'text', True, '', ('GA4 Measurement Protocol '
                                       'JSON template')),
@@ -112,8 +113,18 @@ class BQToMeasurementProtocolProcessorGA4(bq_worker.BQWorker):
     else:
       domain = 'https://www.google-analytics.com/mp/collect'
 
+    client_type = 'measurement_id'
+    id_type = self._params['measurement_id']
+    # Firebase and gtag.js require either an app_instance_id (Firebase)
+    # or client_id (gtag.js) as part of the JSON body. Therefore, we can
+    # reliably check the JSON body of the payload to determine the parameters
+    # of the request.
+    if payload.get('app_instance_id'):
+      client_type = 'firebase_app_id'
+      id_type = self._params['firebase_app_id']
+
     querystring = urllib.parse.urlencode({
-        'measurement_id': self._params['measurement_id'],
+        client_type: id_type,
         'api_secret': self._params['api_secret'],
     })
     response = requests.post(f'{domain}?{querystring}',

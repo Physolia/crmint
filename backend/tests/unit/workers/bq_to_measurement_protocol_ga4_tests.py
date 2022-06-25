@@ -13,9 +13,25 @@ import requests
 from jobs.workers import worker
 from jobs.workers.bigquery import bq_to_measurement_protocol_ga4
 
-_SAMPLE_TEMPLATE = textwrap.dedent("""\
+_SAMPLE_WEB_TEMPLATE = textwrap.dedent("""\
     {
       "client_id": "${client_id}",
+      "timestamp_micros": "${event_timestamp}",
+      "nonPersonalizedAds": false,
+      "events": [
+        {
+          "name": "post_score",
+          "params": {
+            "score": "${score}",
+            "model_type": "${model_type}"
+          }
+        }
+      ]
+    }""")
+
+_SAMPLE_APP_TEMPLATE = textwrap.dedent("""\
+    {
+      "app_instance_id": "${app_instance_id}",
       "timestamp_micros": "${event_timestamp}",
       "nonPersonalizedAds": false,
       "events": [
@@ -63,8 +79,9 @@ class BQToMeasurementProtocolGA4Test(absltest.TestCase):
             'bq_table_id': 'table_id',
             'bq_page_token': None,
             'measurement_id': 'GA-XXXXXX-Y',
+            'firebase_app_id': '1:1234567890:android:321abc456def7890',
             'api_secret': 'xyz',
-            'template': _SAMPLE_TEMPLATE,
+            'template': _SAMPLE_WEB_TEMPLATE,
             'mp_batch_size': 20,
         },
         pipeline_id=1,
@@ -164,8 +181,9 @@ class TestBQToMeasurementProtocolProcessor(absltest.TestCase):
             'bq_batch_size': 10,
             'mp_batch_size': 20,
             'measurement_id': 'GA-XXXXXX-Y',
+            'firebase_app_id': '1:1234567890:android:321abc456def7890',
             'api_secret': 'xyz',
-            'template': _SAMPLE_TEMPLATE,
+            'template': _SAMPLE_WEB_TEMPLATE,
             'debug': True,
         },
         pipeline_id=1,
@@ -240,8 +258,9 @@ class TestBQToMeasurementProtocolProcessor(absltest.TestCase):
             'bq_batch_size': 10,
             'mp_batch_size': 20,
             'measurement_id': 'GA-XXXXXX-Y',
+            'firebase_app_id': '1:1234567890:android:321abc456def7890',
             'api_secret': 'xyz',
-            'template': _SAMPLE_TEMPLATE,
+            'template': _SAMPLE_WEB_TEMPLATE,
             'debug': False,
         },
         pipeline_id=1,
@@ -307,6 +326,81 @@ class TestBQToMeasurementProtocolProcessor(absltest.TestCase):
         }),
         headers={'content-type': 'application/json'})
 
+  def test_success_with_one_post_request_app(self):
+    worker_inst = bq_to_measurement_protocol_ga4.BQToMeasurementProtocolProcessorGA4(
+        {
+            'bq_project_id': 'BQID',
+            'bq_dataset_id': 'DTID',
+            'bq_table_id': 'table_id',
+            'bq_page_token': None,
+            'bq_batch_size': 10,
+            'mp_batch_size': 20,
+            'measurement_id': 'GA-XXXXXX-Y',
+            'firebase_app_id': '1:1234567890:android:321abc456def7890',
+            'api_secret': 'xyz',
+            'template': _SAMPLE_APP_TEMPLATE,
+            'debug': False,
+        },
+        pipeline_id=1,
+        job_id=1,
+        logger_project='PROJECT',
+        logger_credentials=_make_credentials())
+
+    # Stubs the BigQuery table read response.
+    # https://cloud.google.com/bigquery/docs/reference/rest/v2/tabledata/list#response-body
+    api_response = {
+        'kind': 'bigquery#tableDataList',
+        'totalRows': 2,
+        'rows': [
+            {
+                'f': [
+                    {'v': 'AE9C7A5E358F2E0E0E90E4B8DD67AE76'},
+                    {'v': 1234000000},
+                    {'v': 0.9},
+                    {'v': 'LTV v1'},
+                ]
+            },
+            {
+                'f': [
+                    {'v': 'AE9C7A5E358F2E0E0E90E4B8DD67AE76'},
+                    {'v': 1234000000},
+                    {'v': 0.8},
+                    {'v': 'LTV v1'},
+                ]
+            }
+        ],
+    }
+    table_schema = [
+        bigquery.SchemaField('app_instance_id', 'STRING'),
+        bigquery.SchemaField('event_timestamp', 'TIMESTAMP'),
+        bigquery.SchemaField('score', 'FLOAT'),
+        bigquery.SchemaField('model_type', 'STRING'),
+    ]
+    _use_query_results(self._bq_client, table_schema, [api_response])
+
+    post_response = requests.Response()
+    post_response.status_code = 204
+    self._patched_post.return_value = post_response
+
+    self.enter_context(mock.patch.object(worker_inst, '_log', autospec=True))
+    worker_inst._execute()
+    self.assertEqual(self._patched_post.call_count, 2)
+    self._patched_post.assert_called_with(
+        'https://www.google-analytics.com/mp/collect?firebase_app_id=1%3A1234567890%3Aandroid%3A321abc456def7890&api_secret=xyz',
+        data=json.dumps({
+            'app_instance_id': 'AE9C7A5E358F2E0E0E90E4B8DD67AE76',
+            'timestamp_micros': '1970-01-01 00:20:34+00:00',
+            'nonPersonalizedAds': False,
+            'events': [{
+                'name': 'post_score',
+                'params': {
+                    'score': '0.8',
+                    'model_type': 'LTV v1',
+                }
+            }]
+        }),
+        headers={'content-type': 'application/json'})
+
   def test_log_exception_if_http_fails(self):
     worker_inst = bq_to_measurement_protocol_ga4.BQToMeasurementProtocolProcessorGA4(
         {
@@ -317,8 +411,9 @@ class TestBQToMeasurementProtocolProcessor(absltest.TestCase):
             'bq_batch_size': 10,
             'mp_batch_size': 20,
             'measurement_id': 'GA-XXXXXX-Y',
+            'firebase_app_id': '1:1234567890:android:321abc456def7890',
             'api_secret': 'xyz',
-            'template': _SAMPLE_TEMPLATE,
+            'template': _SAMPLE_WEB_TEMPLATE,
             'debug': False,
         },
         pipeline_id=1,
